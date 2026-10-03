@@ -3,11 +3,12 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
+import { loadAgentProfiles } from './agents/profile.ts';
 import { runAgent, type AgentEvent } from './agent/loop.ts';
 import { DEFAULT_POLICY, PermissionEngine } from './agent/permissions.ts';
 import { DEFAULT_SYSTEM_PROMPT, loadConfig } from './config/index.ts';
-import { MemoryStore } from './memory/store.ts';
 import { loadMcpConfigFile, loadMcpTools } from './mcp/tools.ts';
+import { MemoryStore } from './memory/store.ts';
 import { createProvider, type ProviderKind } from './model/factory.ts';
 import type { ModelProvider } from './model/types.ts';
 import { loadSkills, renderSkillIndex } from './skills/loader.ts';
@@ -17,8 +18,8 @@ import { createMemoryTool } from './tools/memory-tools.ts';
 import { createTodoTool, type TodoItem } from './tools/plan-tools.ts';
 import { createRegistry } from './tools/registry.ts';
 import { createTaskTool } from './tools/task-tool.ts';
+import type { ToolDefinition, ToolRegistry } from './tools/types.ts';
 import { createWebSearchTool, webFetchTool } from './tools/web-tools.ts';
-import type { ToolRegistry } from './tools/types.ts';
 
 interface Args {
   prompt?: string;
@@ -26,6 +27,7 @@ interface Args {
   model?: string;
   baseUrl?: string;
   provider?: string;
+  agent?: string;
   maxTurns?: number;
   yes: boolean;
   help: boolean;
@@ -68,6 +70,12 @@ function parseArgs(argv: string[]): Args {
           i++;
         }
         break;
+      case '--agent':
+        if (next) {
+          args.agent = next;
+          i++;
+        }
+        break;
       case '--max-turns':
         if (next) {
           args.maxTurns = Number.parseInt(next, 10);
@@ -100,6 +108,7 @@ Options:
       --model <name>      Model identifier
       --provider <kind>   openai-compatible | anthropic-compatible
       --base-url <url>    Endpoint base URL
+      --agent <name>      Use an agent profile from .qoder/agents
       --max-turns <n>     Maximum agent turns (default: 40)
   -y, --yes               Skip permission confirmation prompts
   -h, --help              Show this help
@@ -109,12 +118,11 @@ Environment:
   QODER_OPEN_PROVIDER, QODER_OPEN_MAX_TURNS, QODER_OPEN_COMPACT_TOKENS,
   QODER_OPEN_SEARCH_URL, QODER_OPEN_YES
 
-Tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite, Memory, WebFetch,
-WebSearch, Task
-
-Memory and skills:
-  memories are stored under <cwd>/.qoder-open/memory.jsonl
-  skills are loaded from <cwd>/.qoder/skills and ~/.qoder-open/skills
+Layout:
+  memories  <cwd>/.qoder-open/memory.jsonl
+  mcp       <cwd>/.qoder-open/mcp.json
+  skills    <cwd>/.qoder/skills and ~/.qoder-open/skills
+  agents    <cwd>/.qoder/agents and ~/.qoder-open/agents
 `;
 
 function render(event: AgentEvent): void {
@@ -177,34 +185,48 @@ async function main(): Promise<number> {
 
   const workspace = resolve(args.cwd);
   const memory = new MemoryStore(join(workspace, '.qoder-open'));
+
   const skills = await loadSkills([
     join(workspace, '.qoder', 'skills'),
     join(homedir(), '.qoder-open', 'skills'),
   ]);
 
-  // 依赖顺序：权限策略 -> 模型提供方 -> 工具注册表（Task 回到注册表本身）
+  const profiles = await loadAgentProfiles([
+    join(workspace, '.qoder', 'agents'),
+    join(homedir(), '.qoder-open', 'agents'),
+  ]);
+  const activeProfile = args.agent ? profiles.find((p) => p.name === args.agent) : undefined;
+  if (args.agent && !activeProfile) {
+    stdout.write(`error: agent profile not found: ${args.agent}\n`);
+    return 2;
+  }
+
   const permissions = new PermissionEngine({
     ...DEFAULT_POLICY,
     skipConfirmation: config.skipConfirmation,
   });
 
+  const model = activeProfile?.model ?? config.model;
   const provider = createProvider({
     kind: config.provider as ProviderKind,
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
-    model: config.model,
+    model,
   });
 
-  const mcpResult = await loadMcpTools(
-    await loadMcpConfigFile(join(workspace, '.qoder-open', 'mcp.json')),
-  );
+  const mcpConfigs =
+    activeProfile?.mcpServers && activeProfile.mcpServers.length > 0
+      ? activeProfile.mcpServers
+      : await loadMcpConfigFile(join(workspace, '.qoder-open', 'mcp.json'));
+  const mcpResult = await loadMcpTools(mcpConfigs);
   for (const message of mcpResult.errors) {
     stdout.write(`[mcp] ${message}\n`);
   }
 
   const taskRef: { provider?: ModelProvider; registry?: ToolRegistry } = {};
   const todoStore: { items: TodoItem[] } = { items: [] };
-  const registry = createRegistry([
+
+  const allTools: ToolDefinition[] = [
     readTool,
     writeTool,
     editTool,
@@ -220,13 +242,32 @@ async function main(): Promise<number> {
       getProvider: () => taskRef.provider,
       getRegistry: () => taskRef.registry,
       permissions,
-      model: config.model,
+      model,
     }),
-  ]);
+  ];
+
+  const selectedTools = allTools.filter((tool) => {
+    if (!activeProfile) return true;
+    if (activeProfile.disallowedTools?.includes(tool.name)) return false;
+    if (activeProfile.tools && activeProfile.tools.length > 0) {
+      return activeProfile.tools.includes(tool.name);
+    }
+    return true;
+  });
+
+  const registry = createRegistry(selectedTools);
   taskRef.provider = provider;
   taskRef.registry = registry;
 
-  const systemPrompt = [DEFAULT_SYSTEM_PROMPT, renderSkillIndex(skills)]
+  const systemPrompt = [
+    activeProfile?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+    activeProfile?.initialPrompt ?? '',
+    renderSkillIndex(
+      activeProfile?.skills && activeProfile.skills.length > 0
+        ? skills.filter((s) => activeProfile.skills?.includes(s.name))
+        : skills,
+    ),
+  ]
     .filter((part) => part.length > 0)
     .join('\n\n');
 
@@ -244,8 +285,8 @@ async function main(): Promise<number> {
       permissions,
       cwd: workspace,
       systemPrompt,
-      model: config.model,
-      maxTurns: config.maxTurns,
+      model,
+      maxTurns: activeProfile?.maxTurns ?? config.maxTurns,
       compactThreshold: config.compactThreshold,
       onEvent: render,
       askUser,
