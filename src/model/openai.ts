@@ -14,7 +14,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
   readonly id = 'openai-compatible';
   readonly defaultModel: string;
 
-  constructor(private readonly config: ProviderConfig) {
+  private readonly config: ProviderConfig;
+
+  constructor(config: ProviderConfig) {
+    this.config = config;
     this.defaultModel = config.model;
   }
 

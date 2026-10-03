@@ -50,7 +50,11 @@ function matches(rule: PermissionRule, tool: string, input: Record<string, unkno
 }
 
 export class PermissionEngine {
-  constructor(private readonly policy: PermissionPolicy = DEFAULT_POLICY) {}
+  private readonly policy: PermissionPolicy;
+
+  constructor(policy: PermissionPolicy = DEFAULT_POLICY) {
+    this.policy = policy;
+  }
 
   evaluate(tool: ToolDefinition, input: Record<string, unknown>): PermissionVerdict {
     for (const rule of this.policy.rules) {

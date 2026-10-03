@@ -14,7 +14,10 @@ export class AnthropicProvider implements ModelProvider {
   readonly id = 'anthropic-compatible';
   readonly defaultModel: string;
 
-  constructor(private readonly config: ProviderConfig) {
+  private readonly config: ProviderConfig;
+
+  constructor(config: ProviderConfig) {
+    this.config = config;
     this.defaultModel = config.model;
   }
 

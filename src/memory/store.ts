@@ -17,7 +17,7 @@ export interface MemoryEntry {
 export class MemoryStore {
   private readonly file: string;
 
-  constructor(private readonly baseDir: string, file = 'memory.jsonl') {
+  constructor(baseDir: string, file = 'memory.jsonl') {
     this.file = join(baseDir, file);
   }
 
