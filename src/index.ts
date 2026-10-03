@@ -7,6 +7,7 @@ import { runAgent, type AgentEvent } from './agent/loop.ts';
 import { DEFAULT_POLICY, PermissionEngine } from './agent/permissions.ts';
 import { DEFAULT_SYSTEM_PROMPT, loadConfig } from './config/index.ts';
 import { MemoryStore } from './memory/store.ts';
+import { loadMcpConfigFile, loadMcpTools } from './mcp/tools.ts';
 import { createProvider, type ProviderKind } from './model/factory.ts';
 import type { ModelProvider } from './model/types.ts';
 import { loadSkills, renderSkillIndex } from './skills/loader.ts';
@@ -194,6 +195,13 @@ async function main(): Promise<number> {
     model: config.model,
   });
 
+  const mcpResult = await loadMcpTools(
+    await loadMcpConfigFile(join(workspace, '.qoder-open', 'mcp.json')),
+  );
+  for (const message of mcpResult.errors) {
+    stdout.write(`[mcp] ${message}\n`);
+  }
+
   const taskRef: { provider?: ModelProvider; registry?: ToolRegistry } = {};
   const todoStore: { items: TodoItem[] } = { items: [] };
   const registry = createRegistry([
@@ -207,6 +215,7 @@ async function main(): Promise<number> {
     createMemoryTool({ store: memory }),
     webFetchTool,
     createWebSearchTool(process.env['QODER_OPEN_SEARCH_URL']),
+    ...mcpResult.tools,
     createTaskTool({
       getProvider: () => taskRef.provider,
       getRegistry: () => taskRef.registry,
