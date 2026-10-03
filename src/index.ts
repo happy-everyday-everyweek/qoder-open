@@ -8,13 +8,16 @@ import { DEFAULT_POLICY, PermissionEngine } from './agent/permissions.ts';
 import { DEFAULT_SYSTEM_PROMPT, loadConfig } from './config/index.ts';
 import { MemoryStore } from './memory/store.ts';
 import { createProvider, type ProviderKind } from './model/factory.ts';
-import { renderSkillIndex, loadSkills } from './skills/loader.ts';
+import type { ModelProvider } from './model/types.ts';
+import { loadSkills, renderSkillIndex } from './skills/loader.ts';
 import { bashTool, globTool, grepTool } from './tools/exec-tools.ts';
 import { editTool, readTool, writeTool } from './tools/file-tools.ts';
 import { createMemoryTool } from './tools/memory-tools.ts';
 import { createTodoTool, type TodoItem } from './tools/plan-tools.ts';
 import { createRegistry } from './tools/registry.ts';
+import { createTaskTool } from './tools/task-tool.ts';
 import { createWebSearchTool, webFetchTool } from './tools/web-tools.ts';
+import type { ToolRegistry } from './tools/types.ts';
 
 interface Args {
   prompt?: string;
@@ -105,6 +108,9 @@ Environment:
   QODER_OPEN_PROVIDER, QODER_OPEN_MAX_TURNS, QODER_OPEN_COMPACT_TOKENS,
   QODER_OPEN_SEARCH_URL, QODER_OPEN_YES
 
+Tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite, Memory, WebFetch,
+WebSearch, Task
+
 Memory and skills:
   memories are stored under <cwd>/.qoder-open/memory.jsonl
   skills are loaded from <cwd>/.qoder/skills and ~/.qoder-open/skills
@@ -175,6 +181,20 @@ async function main(): Promise<number> {
     join(homedir(), '.qoder-open', 'skills'),
   ]);
 
+  // 依赖顺序：权限策略 -> 模型提供方 -> 工具注册表（Task 回到注册表本身）
+  const permissions = new PermissionEngine({
+    ...DEFAULT_POLICY,
+    skipConfirmation: config.skipConfirmation,
+  });
+
+  const provider = createProvider({
+    kind: config.provider as ProviderKind,
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+  });
+
+  const taskRef: { provider?: ModelProvider; registry?: ToolRegistry } = {};
   const todoStore: { items: TodoItem[] } = { items: [] };
   const registry = createRegistry([
     readTool,
@@ -187,14 +207,15 @@ async function main(): Promise<number> {
     createMemoryTool({ store: memory }),
     webFetchTool,
     createWebSearchTool(process.env['QODER_OPEN_SEARCH_URL']),
+    createTaskTool({
+      getProvider: () => taskRef.provider,
+      getRegistry: () => taskRef.registry,
+      permissions,
+      model: config.model,
+    }),
   ]);
-
-  const provider = createProvider({
-    kind: config.provider as ProviderKind,
-    baseUrl: config.baseUrl,
-    apiKey: config.apiKey,
-    model: config.model,
-  });
+  taskRef.provider = provider;
+  taskRef.registry = registry;
 
   const systemPrompt = [DEFAULT_SYSTEM_PROMPT, renderSkillIndex(skills)]
     .filter((part) => part.length > 0)
@@ -206,10 +227,6 @@ async function main(): Promise<number> {
     const answer = await rl.question(`${question} [y/N] `);
     return answer.trim().toLowerCase().startsWith('y');
   };
-  const permissions = new PermissionEngine({
-    ...DEFAULT_POLICY,
-    skipConfirmation: config.skipConfirmation,
-  });
 
   try {
     await runAgent({
