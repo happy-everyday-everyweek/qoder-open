@@ -46,9 +46,12 @@ export function trimToolOutputs(
 
 // 摘要压缩为一次独立模型请求。失败时向上抛出带类别的错误，不静默丢弃。
 export class CompactionError extends Error {
-  constructor(message: string, readonly category: CompactionFailure) {
+  readonly category: CompactionFailure;
+
+  constructor(message: string, category: CompactionFailure) {
     super(message);
     this.name = 'CompactionError';
+    this.category = category;
   }
 }
 

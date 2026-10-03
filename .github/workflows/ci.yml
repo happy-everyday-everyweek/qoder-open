@@ -30,6 +30,14 @@ jobs:
       - name: Smoke test CLI help
         run: node dist/index.js --help
 
+      - name: Guard against unsupported TS syntax
+        run: |
+          if grep -rn 'constructor(' src/ | grep -Eq 'private |public |protected |readonly '; then
+            echo '::error::parameter properties are not supported by strip-only mode'
+            exit 1
+          fi
+          echo 'syntax guard passed'
+
       - name: Unit tests
         run: |
           if ls test/*.test.ts >/dev/null 2>&1; then
