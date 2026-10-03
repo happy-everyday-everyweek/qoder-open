@@ -11,6 +11,8 @@ import { loadMcpConfigFile, loadMcpTools } from './mcp/tools.ts';
 import { MemoryStore } from './memory/store.ts';
 import { createProvider, type ProviderKind } from './model/factory.ts';
 import type { ModelProvider } from './model/types.ts';
+import { resolveCompactThreshold } from './agent/context.ts';
+import { loadLoopDefinition, renderLoopInjection } from './session/loop.ts';
 import { loadSkills, renderSkillIndex } from './skills/loader.ts';
 import { bashTool, globTool, grepTool } from './tools/exec-tools.ts';
 import { editTool, readTool, writeTool } from './tools/file-tools.ts';
@@ -157,6 +159,23 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8').trim();
 }
 
+// 按模型覆写的压缩阈值。格式：{"gpt-5": 200000, "claude": 160000}
+// 对应上游由配置服务下发的 auto_compact_model_threshold_caps。
+function parseCompactCaps(raw: string | undefined): Record<string, number> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -190,6 +209,8 @@ async function main(): Promise<number> {
     join(workspace, '.qoder', 'skills'),
     join(homedir(), '.qoder-open', 'skills'),
   ]);
+
+  const loopDefinition = await loadLoopDefinition(join(workspace, '.qoder', 'loop.md'));
 
   const profiles = await loadAgentProfiles([
     join(workspace, '.qoder', 'agents'),
@@ -262,6 +283,7 @@ async function main(): Promise<number> {
   const systemPrompt = [
     activeProfile?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
     activeProfile?.initialPrompt ?? '',
+    loopDefinition ? renderLoopInjection(loopDefinition) : '',
     renderSkillIndex(
       activeProfile?.skills && activeProfile.skills.length > 0
         ? skills.filter((s) => activeProfile.skills?.includes(s.name))
@@ -270,6 +292,8 @@ async function main(): Promise<number> {
   ]
     .filter((part) => part.length > 0)
     .join('\n\n');
+
+  const compactCaps = parseCompactCaps(process.env['QODER_OPEN_COMPACT_CAPS']);
 
   const rl = args.yes ? undefined : createInterface({ input: stdin, output: stdout });
   const askUser = async (question: string): Promise<boolean> => {
@@ -287,7 +311,7 @@ async function main(): Promise<number> {
       systemPrompt,
       model,
       maxTurns: activeProfile?.maxTurns ?? config.maxTurns,
-      compactThreshold: config.compactThreshold,
+      compactThreshold: resolveCompactThreshold(model, compactCaps, config.compactThreshold),
       onEvent: render,
       askUser,
     });

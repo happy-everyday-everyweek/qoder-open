@@ -61,3 +61,20 @@ export type CompactionFailure =
 export function shouldCompact(messages: ChatMessage[], thresholdTokens: number): boolean {
   return estimateTokens(messages) >= thresholdTokens;
 }
+
+// 阈值上限可由外部按模型维度覆写（对应上游从配置服务下发的
+// auto_compact_model_threshold_caps）。匹配时按前缀从长到短尝试。
+export function resolveCompactThreshold(
+  model: string,
+  caps: Record<string, number> | undefined,
+  fallback: number,
+): number {
+  if (!caps) return fallback;
+  const candidates = Object.keys(caps)
+    .filter((key) => model.startsWith(key))
+    .sort((a, b) => b.length - a.length);
+  const match = candidates[0];
+  if (!match) return fallback;
+  const value = caps[match];
+  return typeof value === 'number' && value > 1000 ? value : fallback;
+}
