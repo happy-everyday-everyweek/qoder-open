@@ -2,6 +2,7 @@ export interface AppConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  provider: string;
   maxTurns: number;
   compactThreshold: number;
   skipConfirmation: boolean;
@@ -12,6 +13,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const baseUrl = overrides.baseUrl ?? env['QODER_OPEN_BASE_URL'] ?? 'https://api.openai.com/v1';
   const apiKey = overrides.apiKey ?? env['QODER_OPEN_API_KEY'] ?? '';
   const model = overrides.model ?? env['QODER_OPEN_MODEL'] ?? 'gpt-4o-mini';
+  const provider = overrides.provider ?? env['QODER_OPEN_PROVIDER'] ?? 'openai-compatible';
   const maxTurns = overrides.maxTurns ?? Number.parseInt(env['QODER_OPEN_MAX_TURNS'] ?? '40', 10);
   const compactThreshold =
     overrides.compactThreshold ?? Number.parseInt(env['QODER_OPEN_COMPACT_TOKENS'] ?? '60000', 10);
@@ -21,6 +23,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     baseUrl,
     apiKey,
     model,
+    provider,
     maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 40,
     compactThreshold:
       Number.isFinite(compactThreshold) && compactThreshold > 1000 ? compactThreshold : 60_000,

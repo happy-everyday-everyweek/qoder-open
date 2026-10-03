@@ -1,21 +1,27 @@
 #!/usr/bin/env node
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { runAgent, type AgentEvent } from './agent/loop.ts';
-import { PermissionEngine, DEFAULT_POLICY } from './agent/permissions.ts';
+import { DEFAULT_POLICY, PermissionEngine } from './agent/permissions.ts';
 import { DEFAULT_SYSTEM_PROMPT, loadConfig } from './config/index.ts';
-import { OpenAICompatibleProvider } from './model/openai.ts';
+import { MemoryStore } from './memory/store.ts';
+import { createProvider, type ProviderKind } from './model/factory.ts';
+import { renderSkillIndex, loadSkills } from './skills/loader.ts';
 import { bashTool, globTool, grepTool } from './tools/exec-tools.ts';
 import { editTool, readTool, writeTool } from './tools/file-tools.ts';
+import { createMemoryTool } from './tools/memory-tools.ts';
 import { createTodoTool, type TodoItem } from './tools/plan-tools.ts';
 import { createRegistry } from './tools/registry.ts';
-import type { PermissionVerdict } from './tools/types.ts';
+import { createWebSearchTool, webFetchTool } from './tools/web-tools.ts';
 
 interface Args {
   prompt?: string;
   cwd: string;
   model?: string;
   baseUrl?: string;
+  provider?: string;
   maxTurns?: number;
   yes: boolean;
   help: boolean;
@@ -52,6 +58,12 @@ function parseArgs(argv: string[]): Args {
           i++;
         }
         break;
+      case '--provider':
+        if (next) {
+          args.provider = next;
+          i++;
+        }
+        break;
       case '--max-turns':
         if (next) {
           args.maxTurns = Number.parseInt(next, 10);
@@ -82,22 +94,26 @@ Options:
   -p, --prompt <text>     Task to run; omit to read the prompt from stdin
       --cwd <dir>         Working directory (default: current directory)
       --model <name>      Model identifier
-      --base-url <url>    OpenAI compatible endpoint
+      --provider <kind>   openai-compatible | anthropic-compatible
+      --base-url <url>    Endpoint base URL
       --max-turns <n>     Maximum agent turns (default: 40)
   -y, --yes               Skip permission confirmation prompts
   -h, --help              Show this help
 
 Environment:
   QODER_OPEN_BASE_URL, QODER_OPEN_API_KEY, QODER_OPEN_MODEL,
-  QODER_OPEN_MAX_TURNS, QODER_OPEN_COMPACT_TOKENS, QODER_OPEN_YES
+  QODER_OPEN_PROVIDER, QODER_OPEN_MAX_TURNS, QODER_OPEN_COMPACT_TOKENS,
+  QODER_OPEN_SEARCH_URL, QODER_OPEN_YES
+
+Memory and skills:
+  memories are stored under <cwd>/.qoder-open/memory.jsonl
+  skills are loaded from <cwd>/.qoder/skills and ~/.qoder-open/skills
 `;
 
 function render(event: AgentEvent): void {
   switch (event.type) {
     case 'text':
       stdout.write(event.text ?? '');
-      break;
-    case 'reasoning':
       break;
     case 'tool-start':
       if (event.toolInput) {
@@ -121,7 +137,7 @@ function render(event: AgentEvent): void {
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
   return Buffer.concat(chunks).toString('utf8').trim();
 }
@@ -136,6 +152,7 @@ async function main(): Promise<number> {
   const config = loadConfig({
     ...(args.baseUrl ? { baseUrl: args.baseUrl } : {}),
     ...(args.model ? { model: args.model } : {}),
+    ...(args.provider ? { provider: args.provider } : {}),
     ...(typeof args.maxTurns === 'number' ? { maxTurns: args.maxTurns } : {}),
     ...(args.yes ? { skipConfirmation: true } : {}),
   });
@@ -151,6 +168,13 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  const workspace = resolve(args.cwd);
+  const memory = new MemoryStore(join(workspace, '.qoder-open'));
+  const skills = await loadSkills([
+    join(workspace, '.qoder', 'skills'),
+    join(homedir(), '.qoder-open', 'skills'),
+  ]);
+
   const todoStore: { items: TodoItem[] } = { items: [] };
   const registry = createRegistry([
     readTool,
@@ -160,13 +184,21 @@ async function main(): Promise<number> {
     globTool,
     grepTool,
     createTodoTool(todoStore),
+    createMemoryTool({ store: memory }),
+    webFetchTool,
+    createWebSearchTool(process.env['QODER_OPEN_SEARCH_URL']),
   ]);
 
-  const provider = new OpenAICompatibleProvider({
+  const provider = createProvider({
+    kind: config.provider as ProviderKind,
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
     model: config.model,
   });
+
+  const systemPrompt = [DEFAULT_SYSTEM_PROMPT, renderSkillIndex(skills)]
+    .filter((part) => part.length > 0)
+    .join('\n\n');
 
   const rl = args.yes ? undefined : createInterface({ input: stdin, output: stdout });
   const askUser = async (question: string): Promise<boolean> => {
@@ -174,7 +206,6 @@ async function main(): Promise<number> {
     const answer = await rl.question(`${question} [y/N] `);
     return answer.trim().toLowerCase().startsWith('y');
   };
-
   const permissions = new PermissionEngine({
     ...DEFAULT_POLICY,
     skipConfirmation: config.skipConfirmation,
@@ -185,8 +216,8 @@ async function main(): Promise<number> {
       provider,
       registry,
       permissions,
-      cwd: args.cwd,
-      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      cwd: workspace,
+      systemPrompt,
       model: config.model,
       maxTurns: config.maxTurns,
       compactThreshold: config.compactThreshold,
@@ -202,10 +233,6 @@ async function main(): Promise<number> {
   }
 }
 
-void stdout;
 void (async (): Promise<void> => {
-  const code = await main();
-  process.exitCode = code;
+  process.exitCode = await main();
 })();
-
-type _UnusedPermissionVerdict = PermissionVerdict;
