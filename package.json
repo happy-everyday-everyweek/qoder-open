@@ -1,0 +1,29 @@
+{
+  "name": "qoder-open",
+  "version": "0.1.0",
+  "description": "Open reimplementation of an agentic coding harness, derived from static analysis of the Qoder desktop client",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "qoder-open": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --experimental-strip-types src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
