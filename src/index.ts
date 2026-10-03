@@ -5,6 +5,7 @@ import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { loadAgentProfiles } from './agents/profile.ts';
 import { runAgent, type AgentEvent } from './agent/loop.ts';
+import { runRepl } from './cli/repl.ts';
 import { DEFAULT_POLICY, PermissionEngine } from './agent/permissions.ts';
 import { DEFAULT_SYSTEM_PROMPT, loadConfig } from './config/index.ts';
 import { loadMcpConfigFile, loadMcpTools } from './mcp/tools.ts';
@@ -196,8 +197,9 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const prompt = args.prompt ?? (await readStdin());
-  if (prompt.length === 0) {
+  const interactive = !args.prompt && stdin.isTTY === true;
+  const prompt = interactive ? '' : (args.prompt ?? (await readStdin()));
+  if (!interactive && prompt.length === 0) {
     stdout.write('error: empty prompt\n');
     return 2;
   }
@@ -295,7 +297,7 @@ async function main(): Promise<number> {
 
   const compactCaps = parseCompactCaps(process.env['QODER_OPEN_COMPACT_CAPS']);
 
-  const rl = args.yes ? undefined : createInterface({ input: stdin, output: stdout });
+  const rl = args.yes || interactive ? undefined : createInterface({ input: stdin, output: stdout });
   const askUser = async (question: string): Promise<boolean> => {
     if (!rl) return true;
     const answer = await rl.question(`${question} [y/N] `);
@@ -303,6 +305,24 @@ async function main(): Promise<number> {
   };
 
   try {
+    const effectiveThreshold = resolveCompactThreshold(model, compactCaps, config.compactThreshold);
+    const effectiveMaxTurns = activeProfile?.maxTurns ?? config.maxTurns;
+
+    if (interactive) {
+      return await runRepl({
+        provider,
+        registry,
+        permissions,
+        memory,
+        cwd: workspace,
+        systemPrompt,
+        model,
+        maxTurns: effectiveMaxTurns,
+        compactThreshold: effectiveThreshold,
+        render,
+      });
+    }
+
     await runAgent({
       provider,
       registry,
@@ -310,8 +330,8 @@ async function main(): Promise<number> {
       cwd: workspace,
       systemPrompt,
       model,
-      maxTurns: activeProfile?.maxTurns ?? config.maxTurns,
-      compactThreshold: resolveCompactThreshold(model, compactCaps, config.compactThreshold),
+      maxTurns: effectiveMaxTurns,
+      compactThreshold: effectiveThreshold,
       onEvent: render,
       askUser,
     });
